@@ -1,0 +1,46 @@
+# -------------------------------------------------------------------
+# Persistent Volume Claims for Immich
+# These use the default StorageClass provided by K3s (local-path).
+# Data persists across pod restarts.
+# -------------------------------------------------------------------
+
+# Photo/video upload storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-upload-pvc
+  namespace: immich
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# PostgreSQL data directory
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-postgres-pvc
+  namespace: immich
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Redis data (optional persistence — keeps cache across restarts)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-redis-pvc
+  namespace: immich
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

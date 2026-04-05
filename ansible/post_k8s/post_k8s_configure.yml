@@ -1,0 +1,172 @@
+---
+# post_k8s_configure.yml
+# Run AFTER Kubespray has finished installing Kubernetes.
+# Sets up kubectl for the cc user, generates secrets, and deploys
+# the platform services (MLflow + MinIO) and Immich into the cluster.
+
+- name: Post-Kubernetes configuration
+  hosts: node1
+  become: false
+  gather_facts: true
+
+  tasks:
+    # ---------------------------------------------------------------
+    # kubectl access for the cc user
+    # ---------------------------------------------------------------
+    - name: Create .kube directory
+      file:
+        path: /home/cc/.kube
+        state: directory
+        mode: "0755"
+
+    - name: Copy kubeconfig for cc user
+      become: true
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/cc/.kube/config
+        owner: cc
+        group: cc
+        mode: "0600"
+        remote_src: yes
+
+    - name: Allow cc user to run docker commands
+      become: true
+      user:
+        name: cc
+        groups: docker
+        append: yes
+
+    # ---------------------------------------------------------------
+    # Detect the external IP (10.56.x.x range on KVM@TACC)
+    # ---------------------------------------------------------------
+    - name: Detect external IP starting with 10.56
+      set_fact:
+        external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | first }}"
+
+    - name: Print detected external IP
+      debug:
+        msg: "External IP for services: {{ external_ip }}"
+
+    # ---------------------------------------------------------------
+    # Generate secrets (not stored in Git)
+    # ---------------------------------------------------------------
+    - name: Check if minio-credentials secret exists
+      command: kubectl get secret minio-credentials -n immich-platform
+      register: minio_secret_check
+      ignore_errors: true
+
+    - name: Generate MinIO access key
+      when: minio_secret_check.rc != 0
+      set_fact:
+        minio_access_key: "immich-minio-admin"
+        minio_secret_key: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+
+    - name: Create immich-platform namespace
+      command: kubectl apply -f /work/immich-iac/k8s/platform/namespace.yaml
+
+    - name: Create MinIO credentials secret
+      when: minio_secret_check.rc != 0
+      command: >
+        kubectl create secret generic minio-credentials
+        --namespace immich-platform
+        --from-literal=accesskey={{ minio_access_key }}
+        --from-literal=secretkey={{ minio_secret_key }}
+
+    - name: Check if mlflow-postgres-credentials secret exists
+      command: kubectl get secret mlflow-postgres-credentials -n immich-platform
+      register: mlflow_pg_secret_check
+      ignore_errors: true
+
+    - name: Generate MLflow PostgreSQL password
+      when: mlflow_pg_secret_check.rc != 0
+      set_fact:
+        mlflow_pg_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+
+    - name: Create MLflow PostgreSQL credentials secret
+      when: mlflow_pg_secret_check.rc != 0
+      command: >
+        kubectl create secret generic mlflow-postgres-credentials
+        --namespace immich-platform
+        --from-literal=password={{ mlflow_pg_password }}
+
+    - name: Check if immich-secrets exists
+      command: kubectl get secret immich-secrets -n immich
+      register: immich_secret_check
+      ignore_errors: true
+
+    - name: Generate Immich JWT secret
+      when: immich_secret_check.rc != 0
+      set_fact:
+        immich_jwt_secret: "{{ lookup('password', '/dev/null length=48 chars=ascii_letters,digits') }}"
+        immich_db_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+
+    - name: Create Immich namespace
+      command: kubectl apply -f /work/immich-iac/k8s/immich/namespace.yaml
+
+    - name: Create Immich secrets
+      when: immich_secret_check.rc != 0
+      command: >
+        kubectl create secret generic immich-secrets
+        --namespace immich
+        --from-literal=db-password={{ immich_db_password }}
+        --from-literal=jwt-secret={{ immich_jwt_secret }}
+
+    # ---------------------------------------------------------------
+    # Deploy platform services (MLflow + MinIO)
+    # ---------------------------------------------------------------
+    - name: Deploy MinIO
+      command: kubectl apply -f /work/immich-iac/k8s/platform/minio.yaml
+
+    - name: Deploy MLflow (PostgreSQL + MLflow server)
+      command: kubectl apply -f /work/immich-iac/k8s/platform/mlflow.yaml
+
+    - name: Patch MLflow service with external IP
+      command: >
+        kubectl patch svc mlflow -n immich-platform
+        --type='json'
+        -p='[{"op":"add","path":"/spec/externalIPs","value":["{{ external_ip }}"]}]'
+
+    - name: Patch MinIO service with external IP
+      command: >
+        kubectl patch svc minio -n immich-platform
+        --type='json'
+        -p='[{"op":"add","path":"/spec/externalIPs","value":["{{ external_ip }}"]}]'
+
+    # ---------------------------------------------------------------
+    # Deploy Immich
+    # ---------------------------------------------------------------
+    - name: Deploy Immich persistent volumes
+      command: kubectl apply -f /work/immich-iac/k8s/immich/persistent-volumes.yaml
+
+    - name: Deploy Immich PostgreSQL
+      command: kubectl apply -f /work/immich-iac/k8s/immich/postgres.yaml
+
+    - name: Deploy Immich Redis
+      command: kubectl apply -f /work/immich-iac/k8s/immich/redis.yaml
+
+    - name: Deploy Immich server
+      command: kubectl apply -f /work/immich-iac/k8s/immich/immich-server.yaml
+
+    - name: Deploy Immich microservices
+      command: kubectl apply -f /work/immich-iac/k8s/immich/immich-microservices.yaml
+
+    - name: Deploy Immich machine learning service
+      command: kubectl apply -f /work/immich-iac/k8s/immich/immich-machine-learning.yaml
+
+    - name: Patch Immich server service with external IP
+      command: >
+        kubectl patch svc immich-server -n immich
+        --type='json'
+        -p='[{"op":"add","path":"/spec/externalIPs","value":["{{ external_ip }}"]}]'
+
+    # ---------------------------------------------------------------
+    # Print access URLs
+    # ---------------------------------------------------------------
+    - name: Print service access URLs
+      debug:
+        msg:
+          - "=========================================="
+          - "Immich UI:    http://{{ external_ip }}:2283"
+          - "MLflow UI:    http://{{ external_ip }}:8000"
+          - "MinIO console: http://{{ external_ip }}:9001"
+          - "=========================================="
