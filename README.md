@@ -1,4 +1,4 @@
-# Immich MLOps Infrastructure — Bring-Up Guide
+# Immich MLOps Infrastructure — Instructions
 
 This repository contains all IaC/CaC materials to provision and configure
 a 3-node Kubernetes cluster on Chameleon (KVM@TACC), and deploy Immich
